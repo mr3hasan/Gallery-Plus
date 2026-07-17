@@ -70,6 +70,15 @@ import {
   Cpu
 } from "lucide-react";
 import { KOTLIN_CODEBASE, CodeFile, CodeCategory } from "./data/kotlinCodebase";
+import { Capacitor, registerPlugin } from "@capacitor/core";
+
+interface MediaStorePluginInterface {
+  getMedia(): Promise<{ media: any[] }>;
+  checkPermissions(): Promise<{ images: string; videos: string }>;
+  requestPermissions(): Promise<{ images: string; videos: string }>;
+}
+
+const MediaStore = registerPlugin<MediaStorePluginInterface>("MediaStore");
 
 interface Photo {
   id: string;
@@ -804,6 +813,74 @@ export default function App() {
     setLoadingPhotos(true);
     addLog("D", "PhotoRepositoryImpl", "Querying local database cache (photos_table)...");
     try {
+      const isCapacitorActive = Capacitor.isNativePlatform();
+      if (isCapacitorActive) {
+        addLog("I", "MediaStorePlugin", "Capacitor Native Platform detected. Accessing system MediaStore...");
+        try {
+          addLog("D", "MediaStorePlugin", "Checking Android external storage permissions...");
+          const permStatus = await MediaStore.checkPermissions();
+          addLog("D", "MediaStorePlugin", `Permission status: images=${permStatus.images}, videos=${permStatus.videos}`);
+          
+          if (permStatus.images !== "granted" || permStatus.videos !== "granted") {
+            addLog("W", "MediaStorePlugin", "Permissions not fully granted. Requesting READ_MEDIA and READ_EXTERNAL_STORAGE...");
+            const requestResult = await MediaStore.requestPermissions();
+            addLog("I", "MediaStorePlugin", `Request result: images=${requestResult.images}, videos=${requestResult.videos}`);
+          }
+          
+          const finalPerm = await MediaStore.checkPermissions();
+          if (finalPerm.images === "granted" || finalPerm.videos === "granted") {
+            addLog("I", "MediaStorePlugin", "Permissions granted! Querying local device storage...");
+            const mediaResult = await MediaStore.getMedia();
+            if (mediaResult && mediaResult.media && mediaResult.media.length > 0) {
+              addLog("I", "MediaStorePlugin", `Success: Retrieved ${mediaResult.media.length} media items directly from Android MediaStore.`);
+              
+              const nativePhotos: Photo[] = mediaResult.media.map((item: any) => ({
+                id: item.id,
+                title: item.title,
+                description: item.description,
+                url: item.url,
+                thumbnailUrl: item.thumbnailUrl,
+                dateAdded: item.dateAdded,
+                album: item.album,
+                mimeType: item.mimeType,
+                size: item.size,
+                width: item.width,
+                height: item.height,
+                isFavorite: item.isFavorite,
+                isSynced: item.isSynced,
+                isInTrash: item.isInTrash,
+                trashTimeLeftDays: item.trashTimeLeftDays,
+                exif: {
+                  camera: item.exif.camera,
+                  lens: item.exif.lens,
+                  aperture: item.exif.aperture,
+                  exposureTime: item.exif.exposureTime,
+                  iso: item.exif.iso,
+                  focalLength: item.exif.focalLength,
+                  location: {
+                    latitude: item.exif.location.latitude,
+                    longitude: item.exif.location.longitude,
+                    address: item.exif.location.address
+                  }
+                },
+                tags: item.tags
+              }));
+              
+              setPhotos(nativePhotos);
+              localStorage.setItem("gallery_cached_photos", JSON.stringify(nativePhotos));
+              setLoadingPhotos(false);
+              return;
+            } else {
+              addLog("W", "MediaStorePlugin", "No local media files found or MediaStore returned empty. Falling back to sandbox/cloud database...");
+            }
+          } else {
+            addLog("E", "MediaStorePlugin", "Storage permission denied by user. Access to local files is blocked.");
+          }
+        } catch (err: any) {
+          addLog("E", "MediaStorePlugin", `Error calling native MediaStore: ${err.message || err}. Falling back to sandbox...`);
+        }
+      }
+
       const response = await fetch("/api/photos");
       if (!response.ok) throw new Error("Backend response error");
       const data = await response.json();
