@@ -320,6 +320,9 @@ export default function App() {
   const [syncingPhotoIds, setSyncingPhotoIds] = useState<Record<string, boolean>>({});
   const [selectedPhoto, setSelectedPhoto] = useState<Photo | null>(null);
   const [activeTab, setActiveTab] = useState<"home" | "photos" | "favorites" | "albums" | "ai" | "settings">("home");
+  const [customSyncServer, setCustomSyncServer] = useState(() => {
+    return localStorage.getItem("custom_sync_server") || "https://ais-pre-6j26bomybh3mrhngsz7myx-655499886291.asia-east1.run.app";
+  });
   const [selectedAlbum, setSelectedAlbum] = useState<string | null>(null);
   const [permissionState, setPermissionState] = useState<"prompt" | "granular" | "granted" | "denied">("prompt");
   const [granularAllowedIds, setGranularAllowedIds] = useState<string[]>([]);
@@ -790,6 +793,7 @@ export default function App() {
       if (!response.ok) throw new Error("Backend response error");
       const data = await response.json();
       setPhotos(data);
+      localStorage.setItem("gallery_cached_photos", JSON.stringify(data));
       addLog("I", "PhotoRepositoryImpl", `Success: Synchronized ${data.length} media records from local SQLite db.`);
       
       // Default granular selection contains first 3 photos for mock sandbox safety
@@ -802,10 +806,30 @@ export default function App() {
       const vaultStatus = await vaultStatusRes.json();
       if (vaultStatus.success) {
         setVaultHasPin(vaultStatus.hasPin);
+        localStorage.setItem("gallery_vault_has_pin", JSON.stringify(vaultStatus.hasPin));
         addLog("D", "EncryptedSharedPreferences", `Secure Vault Key Config status: ${vaultStatus.hasPin ? "CONFIGURED (AES Key Present)" : "UNINITIALIZED"}`);
       }
     } catch (error) {
-      addLog("E", "PhotoRepositoryImpl", "Failed to query SQLite DB. SQLiteException: Database connection refused. Launching local mock re-seed.");
+      addLog("E", "PhotoRepositoryImpl", "Failed to query SQLite DB. SQLiteException: Database connection refused. Launching local offline cache fallback...");
+      
+      const cachedPhotos = localStorage.getItem("gallery_cached_photos");
+      if (cachedPhotos) {
+        try {
+          const parsed = JSON.parse(cachedPhotos);
+          setPhotos(parsed);
+          addLog("I", "PhotoRepositoryImpl", `Offline Cache: Loaded ${parsed.length} cached media records from local device storage.`);
+          if (granularAllowedIds.length === 0 && parsed.length > 0) {
+            setGranularAllowedIds([parsed[0].id, parsed[1].id, parsed[3].id]);
+          }
+        } catch (e) {
+          console.error("Failed to parse cached photos", e);
+        }
+      }
+
+      const cachedVaultHasPin = localStorage.getItem("gallery_vault_has_pin");
+      if (cachedVaultHasPin !== null) {
+        setVaultHasPin(JSON.parse(cachedVaultHasPin));
+      }
     } finally {
       setLoadingPhotos(false);
     }
@@ -4273,6 +4297,80 @@ export default function App() {
                             <CloudUpload className={`w-3.5 h-3.5 ${backupStatus === "backing_up" ? 'animate-bounce' : ''}`} />
                             {backupStatus === "backing_up" ? "Uploading sqlite delta..." : t("backup_btn")}
                           </button>
+                        </div>
+                      </div>
+
+                      {/* 7.5. Dynamic API Remote Sync Server Setting Card */}
+                      <div className={`p-4 rounded-3xl border shadow-sm transition-all duration-200 ${
+                        isDarkMode ? 'bg-[#1D1B20] border-[#3F3B45] text-[#E6E1E5]' : 'bg-white border-[#CAC4D0] text-[#1C1B1F]'
+                      }`}>
+                        <div className="flex items-start gap-2.5 border-b border-[#CAC4D0]/30 pb-2.5 mb-3">
+                          <Cpu className={`w-4 h-4 shrink-0 mt-0.5 ${isDarkMode ? 'text-[#D0BCFF]' : 'text-[#6750A4]'}`} />
+                          <div>
+                            <h4 className="text-xs font-bold leading-tight">Remote Server API Endpoint</h4>
+                            <p className={`text-[10px] mt-0.5 leading-normal ${isDarkMode ? 'text-slate-400' : 'text-[#49454F]'}`}>
+                              Configure the host server address for secure background photo backups, duplicate detection, and AI analysis.
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="space-y-2.5">
+                          <div>
+                            <label className="block text-[9px] font-bold text-slate-500 uppercase mb-1">
+                              Server Base URL
+                            </label>
+                            <input
+                              type="text"
+                              value={customSyncServer}
+                              onChange={(e) => {
+                                setCustomSyncServer(e.target.value);
+                              }}
+                              placeholder="https://your-cloud-run-server.app"
+                              className="w-full bg-white dark:bg-zinc-800 border border-slate-300 dark:border-zinc-700 rounded-xl px-3 py-1.5 text-[11px] text-slate-800 dark:text-slate-100 outline-none font-mono"
+                            />
+                          </div>
+
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => {
+                                localStorage.setItem("custom_sync_server", customSyncServer);
+                                addLog("I", "SyncWorker", `Saved custom remote sync backend: ${customSyncServer}`);
+                                fetchPhotos(); // Trigger update with new endpoint
+                              }}
+                              className={`flex-1 py-1.5 rounded-full text-[10px] font-black text-center cursor-pointer ${
+                                isDarkMode ? 'bg-[#4F378B] text-white hover:bg-[#4F378B]/80' : 'bg-[#6750A4] text-white hover:bg-[#6750A4]/90'
+                              }`}
+                            >
+                              Save Server Config
+                            </button>
+                            <button
+                              onClick={() => {
+                                const defaultUrl = "https://ais-pre-6j26bomybh3mrhngsz7myx-655499886291.asia-east1.run.app";
+                                setCustomSyncServer(defaultUrl);
+                                localStorage.setItem("custom_sync_server", defaultUrl);
+                                addLog("W", "SyncWorker", `Restored remote endpoint to default cloud server.`);
+                                fetchPhotos();
+                              }}
+                              className={`px-3 py-1.5 rounded-full text-[10px] font-black border border-slate-300 dark:border-zinc-700 text-center cursor-pointer ${
+                                isDarkMode ? 'bg-zinc-800 text-slate-300 hover:bg-zinc-700' : 'bg-slate-50 text-slate-700 hover:bg-slate-100'
+                              }`}
+                            >
+                              Reset
+                            </button>
+                          </div>
+
+                          <div className="p-2 bg-slate-900 text-slate-300 rounded-xl border border-slate-800 text-[8px] font-mono leading-relaxed space-y-1">
+                            <div className="flex justify-between">
+                              <span>Active Connection:</span>
+                              <span className="text-emerald-400 font-bold">ONLINE</span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span>Environment Mode:</span>
+                              <span className="text-amber-400 font-bold">
+                                {typeof window !== "undefined" && ((window as any).Capacitor !== undefined || window.location.protocol === "file:") ? "NATIVE MOBILE" : "BROWSER PREVIEW"}
+                              </span>
+                            </div>
+                          </div>
                         </div>
                       </div>
 
