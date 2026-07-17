@@ -314,6 +314,21 @@ const LOCALIZATION: Record<string, Record<string, string>> = {
 };
 
 export default function App() {
+  // View mode check
+  const [viewMode, setViewMode] = useState<"simulator" | "app">(() => {
+    if (typeof window !== 'undefined') {
+      const isCapacitor = (window as any).Capacitor !== undefined ||
+        window.location.protocol === 'file:' ||
+        (window.location.hostname === 'localhost' && window.location.port !== '3000' && window.location.port !== '5173');
+      const isMobileUA = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+      const isSmallScreen = window.innerWidth < 1024;
+      if (isCapacitor || isMobileUA || isSmallScreen) {
+        return "app";
+      }
+    }
+    return "simulator";
+  });
+
   // Mobile app state
   const [photos, setPhotos] = useState<Photo[]>([]);
   const [loadingPhotos, setLoadingPhotos] = useState(true);
@@ -792,13 +807,19 @@ export default function App() {
       const response = await fetch("/api/photos");
       if (!response.ok) throw new Error("Backend response error");
       const data = await response.json();
-      setPhotos(data);
-      localStorage.setItem("gallery_cached_photos", JSON.stringify(data));
-      addLog("I", "PhotoRepositoryImpl", `Success: Synchronized ${data.length} media records from local SQLite db.`);
+      
+      // Get any locally imported photos from actual storage
+      const localPhotosStr = localStorage.getItem("gallery_local_imported_photos");
+      const localPhotos: Photo[] = localPhotosStr ? JSON.parse(localPhotosStr) : [];
+      
+      const combined = [...localPhotos, ...data];
+      setPhotos(combined);
+      localStorage.setItem("gallery_cached_photos", JSON.stringify(combined));
+      addLog("I", "PhotoRepositoryImpl", `Success: Synchronized ${data.length} server records and ${localPhotos.length} local imported records.`);
       
       // Default granular selection contains first 3 photos for mock sandbox safety
-      if (granularAllowedIds.length === 0 && data.length > 0) {
-        setGranularAllowedIds([data[0].id, data[1].id, data[3].id]);
+      if (granularAllowedIds.length === 0 && combined.length > 0) {
+        setGranularAllowedIds([combined[0].id, combined[1].id, combined[2]?.id || combined[0].id]);
       }
 
       // Query secure vault PIN configuration status
@@ -835,6 +856,68 @@ export default function App() {
     }
   };
 
+  const handleDeviceImport = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    
+    addLog("I", "DeviceStorage", `Initializing secure file stream for ${files.length} device files...`);
+    
+    Array.from(files).forEach((file: any) => {
+      const isVideo = file.type.startsWith("video/");
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        if (event.target?.result) {
+          const localUrl = event.target.result as string;
+          const newPhoto: Photo = {
+            id: `local_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+            title: file.name.split('.').slice(0, -1).join('.') || file.name,
+            description: `Imported from physical device: ${file.name}`,
+            url: localUrl,
+            thumbnailUrl: localUrl,
+            dateAdded: new Date().toISOString().split('T')[0],
+            album: isVideo ? "Videos" : "Camera",
+            mimeType: file.type,
+            size: `${(file.size / (1024 * 1024)).toFixed(2)} MB`,
+            width: 1920,
+            height: 1080,
+            isFavorite: false,
+            isSynced: false,
+            isInTrash: false,
+            trashTimeLeftDays: null,
+            exif: {
+              camera: "Android Device Storage",
+              lens: "Mobile Standard Lens",
+              aperture: "f/1.8",
+              exposureTime: "1/120s",
+              iso: "100",
+              focalLength: "24mm",
+              location: {
+                latitude: 23.8103,
+                longitude: 90.4125,
+                address: "Dhaka, Bangladesh"
+              }
+            },
+            tags: [isVideo ? "video" : "image", "imported"]
+          };
+          
+          setPhotos(prev => {
+            const localPhotosStr = localStorage.getItem("gallery_local_imported_photos");
+            const localPhotos: Photo[] = localPhotosStr ? JSON.parse(localPhotosStr) : [];
+            const updatedLocal = [newPhoto, ...localPhotos];
+            localStorage.setItem("gallery_local_imported_photos", JSON.stringify(updatedLocal));
+            
+            const updatedAll = [newPhoto, ...prev];
+            localStorage.setItem("gallery_cached_photos", JSON.stringify(updatedAll));
+            return updatedAll;
+          });
+          
+          addLog("I", "DeviceStorage", `Successfully imported: "${file.name}" to album "${isVideo ? "Videos" : "Camera"}"`);
+        }
+      };
+      reader.readAsDataURL(file);
+    });
+  };
+
   // Re-seed DB to default
   const handleResetDatabase = async () => {
     addLog("W", "DatabaseAdmin", "Requesting SQLite database re-seed...");
@@ -842,6 +925,7 @@ export default function App() {
       const res = await fetch("/api/photos/reset", { method: "POST" });
       const data = await res.json();
       if (data.success) {
+        localStorage.removeItem("gallery_local_imported_photos");
         addLog("I", "DatabaseAdmin", "Database reset complete. SQLite tables recreated and re-seeded with 7 flagship files.");
         setSelectedPhoto(null);
         setActiveTab("photos");
@@ -2389,7 +2473,7 @@ export default function App() {
   const palette = PALETTES[materialPalette] || PALETTES.purple;
 
   return (
-    <div className="min-h-screen bg-[#F8F9FA] text-[#1C1B1F] flex flex-col font-sans select-none antialiased overflow-x-hidden" id="app_root">
+    <div className={`${viewMode === 'app' ? 'h-screen w-screen overflow-hidden' : 'min-h-screen'} bg-[#F8F9FA] text-[#1C1B1F] flex flex-col font-sans select-none antialiased overflow-x-hidden`} id="app_root">
       <style>{`
         :root {
           --m3-primary: ${palette.primary};
@@ -2420,97 +2504,115 @@ export default function App() {
       `}</style>
       
       {/* Header bar */}
-      <header className="border-b border-[#CAC4D0] bg-[#F8F9FA]/90 backdrop-blur-md px-6 py-4 flex flex-wrap items-center justify-between gap-4 sticky top-0 z-50" id="header_container">
-        <div className="flex items-center gap-3">
-          <div className="p-2.5 bg-[#EADDFF] rounded-xl border border-[#CAC4D0]/60 text-[#21005D]">
-            <Smartphone className="w-6 h-6" />
+      {viewMode === "simulator" && (
+        <header className="border-b border-[#CAC4D0] bg-[#F8F9FA]/90 backdrop-blur-md px-6 py-4 flex flex-wrap items-center justify-between gap-4 sticky top-0 z-50" id="header_container">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 bg-[#EADDFF] rounded-xl border border-[#CAC4D0]/60 text-[#21005D]">
+              <Smartphone className="w-6 h-6" />
+            </div>
+            <div>
+              <h1 className="text-lg font-semibold text-[#1C1B1F] tracking-tight flex items-center gap-2">
+                Android Gallery Simulator <span className="text-xs px-2.5 py-0.5 bg-[#EADDFF] text-[#21005D] rounded-full font-mono border border-[#CAC4D0]/40 font-bold">SDK 35</span>
+              </h1>
+              <p className="text-xs text-[#49454F] font-medium">Clean Architecture, MVVM & Compose Code Explorer</p>
+            </div>
           </div>
-          <div>
-            <h1 className="text-lg font-semibold text-[#1C1B1F] tracking-tight flex items-center gap-2">
-              Android Gallery Simulator <span className="text-xs px-2.5 py-0.5 bg-[#EADDFF] text-[#21005D] rounded-full font-mono border border-[#CAC4D0]/40 font-bold">SDK 35</span>
-            </h1>
-            <p className="text-xs text-[#49454F] font-medium">Clean Architecture, MVVM & Compose Code Explorer</p>
-          </div>
-        </div>
 
-        <div className="flex items-center gap-3">
-          <button
-            onClick={handleResetDatabase}
-            className="px-3.5 py-1.5 bg-[#ECE6F0] hover:bg-[#ECE6F0]/80 active:bg-[#CAC4D0] text-[#49454F] hover:text-[#1C1B1F] rounded-lg text-xs font-semibold border border-[#CAC4D0] transition flex items-center gap-1.5 cursor-pointer"
-            id="reset_db_btn"
-            title="Reseed SQLite database state to default values"
-          >
-            <RefreshCw className="w-3.5 h-3.5" />
-            Re-seed DB
-          </button>
-          
-          <button
-            onClick={handleDownloadCodebase}
-            className="px-4 py-2 bg-[#6750A4] hover:bg-[#6750A4]/90 active:bg-[#21005D] text-white rounded-lg text-xs font-semibold shadow-sm hover:shadow transition flex items-center gap-2 cursor-pointer"
-            id="download_full_code_btn"
-          >
-            <Download className="w-4 h-4" />
-            Export Kotlin Project
-          </button>
-        </div>
-      </header>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={handleResetDatabase}
+              className="px-3.5 py-1.5 bg-[#ECE6F0] hover:bg-[#ECE6F0]/80 active:bg-[#CAC4D0] text-[#49454F] hover:text-[#1C1B1F] rounded-lg text-xs font-semibold border border-[#CAC4D0] transition flex items-center gap-1.5 cursor-pointer"
+              id="reset_db_btn"
+              title="Reseed SQLite database state to default values"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              Re-seed DB
+            </button>
+            
+            <button
+              onClick={handleDownloadCodebase}
+              className="px-4 py-2 bg-[#6750A4] hover:bg-[#6750A4]/90 active:bg-[#21005D] text-white rounded-lg text-xs font-semibold shadow-sm hover:shadow transition flex items-center gap-2 cursor-pointer"
+              id="download_full_code_btn"
+            >
+              <Download className="w-4 h-4" />
+              Export Kotlin Project
+            </button>
+          </div>
+        </header>
+      )}
 
       {/* Main Workspace Frame */}
-      <div className="flex-1 flex flex-col lg:flex-row overflow-hidden" id="main_workspace">
+      <div className={`flex-1 flex flex-col lg:flex-row overflow-hidden ${viewMode === 'app' ? 'w-full h-full p-0 m-0' : ''}`} id="main_workspace">
         
         {/* Left column: Realistic Android Emulator Viewport */}
-        <section className={`transition-all duration-300 ${layoutMode === 'tablet' ? 'lg:w-[760px]' : layoutMode === 'foldable' ? 'lg:w-[540px]' : 'lg:w-[460px] xl:w-[480px]'} p-4 xl:p-6 bg-[#F3EDF7]/40 border-r border-[#CAC4D0] flex flex-col justify-start items-center shrink-0 overflow-y-auto max-h-[calc(100vh-73px)] lg:max-h-[none]`} id="emulator_column">
+        <section className={`transition-all duration-300 ${viewMode === 'app' ? 'w-full h-full p-0 m-0 border-0 bg-transparent max-h-none flex-1 overflow-hidden' : (layoutMode === 'tablet' ? 'lg:w-[760px]' : layoutMode === 'foldable' ? 'lg:w-[540px]' : 'lg:w-[460px] xl:w-[480px]') + ' p-4 xl:p-6 bg-[#F3EDF7]/40 border-r border-[#CAC4D0] flex flex-col justify-start items-center shrink-0 overflow-y-auto max-h-[calc(100vh-73px)] lg:max-h-[none]'}`} id="emulator_column">
           
           {/* Quick Emulator Controls / Presets */}
-          <div className="w-full max-w-sm flex items-center justify-between p-2 mb-3 bg-[#EADDFF]/20 rounded-2xl border border-[#CAC4D0]/30 text-xs">
-            <span className="font-bold text-[#6750A4] uppercase tracking-wider text-[10px]">Viewport:</span>
-            <div className="flex gap-1.5">
-              <button
-                onClick={() => {
-                  setLayoutMode("phone");
-                  addLog("V", "Emulator", "Switched emulator frame to Standard Phone Mode");
-                }}
-                className={`px-2 py-1 rounded-lg text-[10px] font-black transition cursor-pointer ${layoutMode === "phone" ? "bg-[#6750A4] text-white" : "bg-white border border-[#CAC4D0]/40 text-[#49454F]"}`}
-              >
-                Phone
-              </button>
-              <button
-                onClick={() => {
-                  setLayoutMode("foldable");
-                  addLog("V", "Emulator", "Switched emulator frame to Flex-Foldable Mode");
-                }}
-                className={`px-2 py-1 rounded-lg text-[10px] font-black transition cursor-pointer ${layoutMode === "foldable" ? "bg-[#6750A4] text-white" : "bg-white border border-[#CAC4D0]/40 text-[#49454F]"}`}
-              >
-                Foldable
-              </button>
-              <button
-                onClick={() => {
-                  setLayoutMode("tablet");
-                  addLog("V", "Emulator", "Switched emulator frame to Widescreen Tablet Mode");
-                }}
-                className={`px-2 py-1 rounded-lg text-[10px] font-black transition cursor-pointer ${layoutMode === "tablet" ? "bg-[#6750A4] text-white" : "bg-white border border-[#CAC4D0]/40 text-[#49454F]"}`}
-              >
-                Tablet
-              </button>
+          {viewMode === "simulator" && (
+            <div className="w-full max-w-sm flex items-center justify-between p-2 mb-3 bg-[#EADDFF]/20 rounded-2xl border border-[#CAC4D0]/30 text-xs">
+              <span className="font-bold text-[#6750A4] uppercase tracking-wider text-[10px]">Viewport:</span>
+              <div className="flex gap-1.5">
+                <button
+                  onClick={() => {
+                    setLayoutMode("phone");
+                    addLog("V", "Emulator", "Switched emulator frame to Standard Phone Mode");
+                  }}
+                  className={`px-2 py-1 rounded-lg text-[10px] font-black transition cursor-pointer ${layoutMode === "phone" ? "bg-[#6750A4] text-white" : "bg-white border border-[#CAC4D0]/40 text-[#49454F]"}`}
+                >
+                  Phone
+                </button>
+                <button
+                  onClick={() => {
+                    setLayoutMode("foldable");
+                    addLog("V", "Emulator", "Switched emulator frame to Flex-Foldable Mode");
+                  }}
+                  className={`px-2 py-1 rounded-lg text-[10px] font-black transition cursor-pointer ${layoutMode === "foldable" ? "bg-[#6750A4] text-white" : "bg-white border border-[#CAC4D0]/40 text-[#49454F]"}`}
+                >
+                  Foldable
+                </button>
+                <button
+                  onClick={() => {
+                    setLayoutMode("tablet");
+                    addLog("V", "Emulator", "Switched emulator frame to Widescreen Tablet Mode");
+                  }}
+                  className={`px-2 py-1 rounded-lg text-[10px] font-black transition cursor-pointer ${layoutMode === "tablet" ? "bg-[#6750A4] text-white" : "bg-white border border-[#CAC4D0]/40 text-[#49454F]"}`}
+                >
+                  Tablet
+                </button>
+              </div>
             </div>
-          </div>
+          )}
 
           {/* Sibling wrap for phone frame and tablet control board */}
-          <div className={`flex ${layoutMode === 'tablet' ? 'flex-row items-start gap-4' : 'flex-col items-center'} justify-center w-full`}>
+          <div className={`flex ${viewMode === 'app' ? 'w-full h-full p-0 m-0' : layoutMode === 'tablet' ? 'flex-row items-start gap-4' : 'flex-col items-center'} justify-center w-full`}>
             {/* Pixel 9 styled emulator phone container */}
-            <div className={`transition-all duration-300 bg-[#1C1B1F] p-3.5 relative shadow-xl border-4 border-neutral-700 flex flex-col overflow-hidden ring-1 ring-neutral-400/20 ${layoutMode === 'tablet' ? 'w-[700px] h-[520px] rounded-[32px]' : layoutMode === 'foldable' ? 'w-[460px] h-[640px] rounded-[40px]' : 'w-[370px] h-[780px] rounded-[50px]'}`} id="android_phone_frame">
+            <div className={`transition-all duration-300 ${viewMode === 'app' ? 'w-full h-full p-0 m-0 border-0 rounded-none shadow-none ring-0 flex flex-col overflow-hidden relative' : 'bg-[#1C1B1F] p-3.5 relative shadow-xl border-4 border-neutral-700 flex flex-col overflow-hidden ring-1 ring-neutral-400/20 ' + (layoutMode === 'tablet' ? 'w-[700px] h-[520px] rounded-[32px]' : layoutMode === 'foldable' ? 'w-[460px] h-[640px] rounded-[40px]' : 'w-[370px] h-[780px] rounded-[50px]')}`} id="android_phone_frame">
             
             {/* Camera cutout notch */}
-            <div className="absolute top-6 left-1/2 -translate-x-1/2 w-4 h-4 rounded-full bg-black border border-slate-900 z-50 flex items-center justify-center">
-              <div className="w-1 h-1 rounded-full bg-blue-900/50"></div>
-            </div>
+            {viewMode === "simulator" && (
+              <div className="absolute top-6 left-1/2 -translate-x-1/2 w-4 h-4 rounded-full bg-black border border-slate-900 z-50 flex items-center justify-center">
+                <div className="w-1 h-1 rounded-full bg-blue-900/50"></div>
+              </div>
+            )}
 
             {/* Simulated speaker mesh line */}
-            <div className="absolute top-2.5 left-1/2 -translate-x-1/2 w-16 h-1 rounded-full bg-[#CAC4D0]/30 z-50"></div>
+            {viewMode === "simulator" && (
+              <div className="absolute top-2.5 left-1/2 -translate-x-1/2 w-16 h-1 rounded-full bg-[#CAC4D0]/30 z-50"></div>
+            )}
 
             {/* Inner display screen */}
-            <div className={`w-full h-full ${isDarkMode ? 'bg-[#121212] text-[#E6E1E5]' : 'bg-[#F8F9FA] text-[#1C1B1F]'} rounded-[38px] overflow-hidden flex flex-col relative`} id="phone_screen_canvas">
+            <div className={`w-full h-full ${isDarkMode ? 'bg-[#121212] text-[#E6E1E5]' : 'bg-[#F8F9FA] text-[#1C1B1F]'} ${viewMode === 'app' ? 'rounded-none' : 'rounded-[38px]'} overflow-hidden flex flex-col relative`} id="phone_screen_canvas">
               
+              {/* Hidden Local Storage File Input */}
+              <input
+                type="file"
+                multiple
+                accept="image/*,video/*"
+                onChange={handleDeviceImport}
+                className="hidden"
+                id="device_gallery_importer"
+              />
+
               {/* StatusBar Mock */}
               <div className={`${isDarkMode ? 'bg-[#121212]/95 text-slate-300' : 'bg-[#F8F9FA]/95 text-[#49454F]'} backdrop-blur px-5 pt-3 pb-1.5 flex items-center justify-between text-xs font-semibold z-40 relative select-none`}>
                 <span>{phoneTime || "10:00 AM"}</span>
@@ -3229,14 +3331,20 @@ export default function App() {
                         <span className="text-xs text-[#49454F] font-semibold">Reading storage contents...</span>
                       </div>
                     ) : visiblePhotos.length === 0 ? (
-                      <div className="flex flex-col items-center justify-center py-20 text-center">
+                      <div className="flex flex-col items-center justify-center py-16 text-center px-4">
                         <div className="w-14 h-14 bg-[#ECE6F0] text-[#6750A4] rounded-full flex items-center justify-center mb-3">
                           <ImageIcon className="w-6 h-6" />
                         </div>
                         <h4 className="text-sm font-bold text-[#1C1B1F]">No media to show</h4>
-                        <p className="text-[11px] text-[#49454F] px-6 mt-1 font-semibold leading-relaxed">
-                          No images match the current album constraints, or access hasn't been granted to them via the granular permission scope.
+                        <p className="text-[11px] text-[#49454F] max-w-xs mt-1 font-semibold leading-relaxed mb-4">
+                          Your gallery is empty, or permission was not granted. Tap below to select and import real photos from your phone!
                         </p>
+                        <button
+                          onClick={() => document.getElementById("device_gallery_importer")?.click()}
+                          className="px-4 py-2.5 bg-[#6750A4] hover:bg-[#6750A4]/90 active:bg-[#21005D] text-white rounded-full text-xs font-bold transition flex items-center gap-1.5 shadow-sm cursor-pointer"
+                        >
+                          <Plus className="w-4 h-4" /> Import Device Photos
+                        </button>
                       </div>
                     ) : (
                       <div className={`grid ${settingsGridSize === 2 ? 'grid-cols-2' : settingsGridSize === 4 ? 'grid-cols-4' : 'grid-cols-3'} gap-2.5`} id="photo_grid_container">
@@ -4300,6 +4408,70 @@ export default function App() {
                         </div>
                       </div>
 
+                      {/* Display & View Mode Configuration Card */}
+                      <div className={`p-4 rounded-3xl border shadow-sm transition-all duration-200 ${
+                        isDarkMode ? 'bg-[#1D1B20] border-[#3F3B45] text-[#E6E1E5]' : 'bg-white border-[#CAC4D0] text-[#1C1B1F]'
+                      }`}>
+                        <div className="flex items-start gap-2.5 border-b border-[#CAC4D0]/30 pb-2.5 mb-3">
+                          <Smartphone className={`w-4 h-4 shrink-0 mt-0.5 ${isDarkMode ? 'text-[#D0BCFF]' : 'text-[#6750A4]'}`} />
+                          <div>
+                            <h4 className="text-xs font-bold leading-tight">Display & View Mode</h4>
+                            <p className={`text-[10px] mt-0.5 leading-normal ${isDarkMode ? 'text-slate-400' : 'text-[#49454F]'}`}>
+                              Switch between the interactive developer simulator and a clean fullscreen standalone mobile view.
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="space-y-2.5">
+                          <div className="grid grid-cols-2 gap-2">
+                            <button
+                              onClick={() => {
+                                setViewMode("simulator");
+                                addLog("I", "ViewMode", "Switched to Simulator & Code Explorer View.");
+                              }}
+                              className={`py-2 px-3 rounded-xl text-[10px] font-bold text-center cursor-pointer border ${
+                                viewMode === "simulator"
+                                  ? isDarkMode
+                                    ? 'bg-[#4F378B] border-[#D0BCFF] text-white'
+                                    : 'bg-[#EADDFF] border-[#6750A4] text-[#21005D]'
+                                  : isDarkMode
+                                    ? 'bg-zinc-900 border-zinc-700 text-slate-400 hover:text-white'
+                                    : 'bg-slate-50 border-slate-200 text-slate-600 hover:text-slate-800'
+                              }`}
+                            >
+                              Simulator + Code
+                            </button>
+                            <button
+                              onClick={() => {
+                                setViewMode("app");
+                                addLog("I", "ViewMode", "Switched to Standalone App View. Fill screen active.");
+                              }}
+                              className={`py-2 px-3 rounded-xl text-[10px] font-bold text-center cursor-pointer border ${
+                                viewMode === "app"
+                                  ? isDarkMode
+                                    ? 'bg-[#4F378B] border-[#D0BCFF] text-white'
+                                    : 'bg-[#EADDFF] border-[#6750A4] text-[#21005D]'
+                                  : isDarkMode
+                                    ? 'bg-zinc-900 border-zinc-700 text-slate-400 hover:text-white'
+                                    : 'bg-slate-50 border-slate-200 text-slate-600 hover:text-slate-800'
+                              }`}
+                            >
+                              Fullscreen App
+                            </button>
+                          </div>
+                          
+                          <div className="p-2 bg-slate-900 text-slate-300 rounded-xl border border-slate-800 text-[8px] font-mono leading-relaxed space-y-1">
+                            <div className="flex justify-between">
+                              <span>Default Build View:</span>
+                              <span className="text-amber-400 font-bold">FULLSCREEN NATIVE WEBVIEW</span>
+                            </div>
+                            <div className="text-[7.5px] text-slate-400 leading-normal">
+                              In standalone/mobile builds, the developer sidebars, headers, and phone frames are automatically removed to offer a authentic native user experience.
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
                       {/* 7.5. Dynamic API Remote Sync Server Setting Card */}
                       <div className={`p-4 rounded-3xl border shadow-sm transition-all duration-200 ${
                         isDarkMode ? 'bg-[#1D1B20] border-[#3F3B45] text-[#E6E1E5]' : 'bg-white border-[#CAC4D0] text-[#1C1B1F]'
@@ -4586,6 +4758,24 @@ export default function App() {
                 )}
 
               </div>
+
+              {/* Floating Action Button for importing media */}
+              {activeTab === "photos" && permissionState !== "denied" && (
+                <button
+                  onClick={() => {
+                    document.getElementById("device_gallery_importer")?.click();
+                  }}
+                  className={`absolute bottom-24 right-5 p-3.5 rounded-2xl shadow-lg hover:scale-105 active:scale-95 transition-all duration-200 cursor-pointer flex items-center justify-center gap-1.5 z-40 ${
+                    isDarkMode 
+                      ? "bg-[#4F378B] text-[#D0BCFF] border border-[#3F3B45]" 
+                      : "bg-[#EADDFF] text-[#21005D] border border-[#CAC4D0]/30"
+                  }`}
+                  title="Import Photos/Videos from Device Storage"
+                >
+                  <Plus className="w-5 h-5 stroke-[2.5]" />
+                  <span className="text-[10.5px] font-black tracking-tight uppercase">Import</span>
+                </button>
+              )}
 
               {/* M3 Navigation Bar Mock */}
               <div className={`absolute bottom-0 inset-x-0 h-20 border-t ${isDarkMode ? 'bg-[#1E1B24] border-[#3F3B45]' : 'bg-[#F7F2FA] border-[#ECE6F0]'} flex items-center justify-around px-2 pb-1.5 z-40`} id="virtual_nav_bar">
@@ -7121,7 +7311,7 @@ export default function App() {
           </div>
 
           {/* Sibling element: M3 Feature Console inside tablet view */}
-          {layoutMode === "tablet" && (
+          {viewMode === "simulator" && layoutMode === "tablet" && (
             <div className={`w-[260px] h-[520px] rounded-2xl border ${isDarkMode ? 'bg-[#1C1B22] border-[#3F3B45] text-[#E6E1E5]' : 'bg-[#F3EDF7] border-[#CAC4D0] text-[#1C1B1F]'} flex flex-col overflow-y-auto p-3.5 z-30 font-sans shadow-md`} id="tablet_right_panel">
               <div className="flex items-center gap-1.5 mb-2.5 border-b pb-2">
                 <Cpu className="w-4 h-4 text-[#6750A4]" />
@@ -7342,7 +7532,8 @@ export default function App() {
         </section>
 
         {/* Right column: Interactive Clean Architecture & MVVM Codebase Browser */}
-        <section className="flex-1 flex flex-col bg-slate-950 overflow-hidden" id="ide_column">
+        {viewMode === "simulator" && (
+          <section className="flex-1 flex flex-col bg-slate-950 overflow-hidden" id="ide_column">
           
           {/* Tabs bar */}
           <div className="bg-slate-900 border-b border-slate-800 px-4 py-1.5 flex items-center justify-between" id="ide_tabs_header">
@@ -7794,6 +7985,7 @@ export default function App() {
           </div>
 
         </section>
+      )}
 
       </div>
 

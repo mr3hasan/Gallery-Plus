@@ -1,0 +1,10 @@
+{
+  "appId": "com.ec1234.app",
+  "appName": "Gallery Plus",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "https",
+    "hostname": "localhost",
+    "cleartext": true
+  }
+}

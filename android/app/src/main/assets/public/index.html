@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>My Google AI Studio App</title>
+    <script>
+      // Safeguard against third-party scripts/polyfills attempting to assign to read-only window.fetch
+      (function() {
+        try {
+          var originalFetch = window.fetch;
+          Object.defineProperty(window, 'fetch', {
+            get: function() {
+              return originalFetch;
+            },
+            set: function(value) {
+              originalFetch = value;
+            },
+            configurable: true,
+            enumerable: true
+          });
+        } catch (e) {
+          console.warn("Could not patch window.fetch accessor:", e);
+        }
+      })();
+    </script>
+    <script type="module" crossorigin src="/assets/index-DcbzpyqE.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-CYoWN8Xi.css">
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>
+
