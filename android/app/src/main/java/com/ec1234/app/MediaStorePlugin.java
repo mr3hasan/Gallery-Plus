@@ -93,13 +93,7 @@ public class MediaStorePlugin extends Plugin {
 
                     Uri mediaItemUri = Uri.withAppendedPath(contentUri, String.valueOf(id));
                     
-                    // Fallback to mediaItemUri.toString() or bridge local URL
-                    String webPath = "";
-                    try {
-                        webPath = getBridge().getLocalUrl(mediaItemUri);
-                    } catch (Exception e) {
-                        webPath = mediaItemUri.toString();
-                    }
+                    String webPath = mediaItemUri.toString();
 
                     JSObject item = new JSObject();
                     item.put("id", (isVideo ? "v_" : "i_") + id);
