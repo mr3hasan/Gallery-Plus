@@ -48,6 +48,8 @@ jobs:
         run: |
           cd android
           sed -i 's|gradle-.*-all.zip|gradle-8.13-all.zip|g' gradle/wrapper/gradle-wrapper.properties
+          # Download a fresh, uncorrupted official Gradle Wrapper JAR directly from Gradle's repository
+          curl -L -o gradle/wrapper/gradle-wrapper.jar https://github.com/gradle/gradle/raw/v8.13.0/gradle/wrapper/gradle-wrapper.jar
 
       - name: Build Android APK
         run: |
