@@ -1,0 +1,6 @@
+{
+  "name": "Android Gallery Simulator & IDE",
+  "description": "An interactive, full-stack Android Gallery simulation built with Kotlin-aligned Clean Architecture, Jetpack Compose Material 3 replica, and server-side Gemini API for AI auto-tagging, EXIF analysis, and semantic search.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
